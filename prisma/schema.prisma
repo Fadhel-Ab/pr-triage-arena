@@ -1,0 +1,263 @@
+// PR Triage Arena — data model
+//
+// Naming: a `Session` is one full attempt (lobby -> arena -> results).
+// The timed, forward-only "sessions" inside an attempt are `SessionStage`s
+// (stage 0 = brief reading, stage 1..N = one file each).
+//
+// Ground truth lives in its own table (`HunkGroundTruth`) so that a casual
+// `include: { hunks: true }` can never leak answers to the client.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // Neon pooled connection string
+  directUrl = env("DIRECT_URL") // Neon direct connection, used by migrations
+}
+
+// ───────────────────────────── Enums ─────────────────────────────
+
+enum Domain {
+  FULL_STACK
+  BACKEND_API
+  FRONTEND_STATE_UI
+  DATABASE_SECURITY
+  MOBILE_FLUTTER
+}
+
+enum StackMode {
+  CORE // Next.js, NestJS, Express, Prisma, PostgreSQL
+  CURVEBALL // Supabase, Drizzle, tRPC, Fastify, ...
+}
+
+enum PacingMode {
+  SPRINT // 15 min, brief + 2 file stages
+  FULL_SIMULATION // 38 min, brief + 4 file stages
+}
+
+enum SessionStatus {
+  READY // generated, timer not started
+  IN_PROGRESS
+  SUBMITTED // all stages locked, awaiting grading
+  GRADED
+  GRADING_FAILED
+}
+
+enum StageKind {
+  BRIEF
+  FILE
+}
+
+enum LockReason {
+  MANUAL // user clicked "Lock & Next"
+  TIMEOUT // client timer hit zero and submitted within the grace window
+  EXPIRED // server locked it because nobody submitted in time (tab closed, etc.)
+}
+
+// What the ground-truth key says a hunk is.
+enum TruthSeverity {
+  P0 // ship-blocking / data integrity / security
+  P1 // must fix this sprint
+  P2 // backlog
+  INTENTIONAL // looks wrong, but matches a policy stated in the brief
+  CLEAN // correct code (often a decoy that looks suspicious)
+}
+
+// What the user can pick. CLEAN and INTENTIONAL collapse into one choice
+// in the UI because both mean "do not block this PR on this hunk".
+enum Verdict {
+  P0
+  P1
+  P2
+  CLEAN_OR_INTENTIONAL
+  STRATEGIC_SKIP
+}
+
+// Client-side behaviour only. Stage start/lock times live on SessionStage.
+enum TelemetryType {
+  BRIEF_TOGGLED
+  HUNK_FOCUSED
+  VERDICT_CHANGED
+  WORD_CAP_HIT
+  TAB_HIDDEN
+  TAB_VISIBLE
+}
+
+// ───────────────────────────── Models ─────────────────────────────
+
+model Session {
+  id     String        @id @default(cuid())
+  status SessionStatus @default(READY)
+
+  // Lobby config
+  domain    Domain
+  stackMode StackMode
+  pacing    PacingMode
+
+  // Generated scenario (safe to show)
+  title         String
+  prSummary     String // the junior dev's PR description
+  briefContext  String // business context
+  briefRules    String[] // tenant / security rules, one per entry
+  briefPolicies Json // [{ id, rule, rationale }] deliberate policy quirks
+  stackLabel    String // e.g. "Fastify + Drizzle + Postgres"
+
+  // Forward-only state machine. -1 = not started.
+  currentStageIndex Int       @default(-1)
+  startedAt         DateTime?
+  submittedAt       DateTime?
+
+  // Generation provenance (for debugging bad scenarios)
+  model           String
+  promptVersion   String
+  generationMs    Int
+  generationTries Int
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  files       GeneratedFile[]
+  stages      SessionStage[]
+  submissions UserSubmission[]
+  telemetry   TelemetryEvent[]
+  grade       GradeReport?
+
+  @@index([createdAt])
+  @@index([domain, stackMode])
+}
+
+model SessionStage {
+  id          String    @id @default(cuid())
+  sessionId   String
+  index       Int // 0 = brief
+  kind        StageKind
+  fileId      String?   @unique // null for the brief stage
+  durationSec Int
+
+  startedAt  DateTime?
+  deadlineAt DateTime? // server-authoritative; the client only renders it
+  lockedAt   DateTime?
+  lockReason LockReason?
+
+  session Session        @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  file    GeneratedFile? @relation(fields: [fileId], references: [id])
+
+  @@unique([sessionId, index])
+}
+
+model GeneratedFile {
+  id        String @id @default(cuid())
+  sessionId String
+  order     Int // 0-based, matches stage index - 1
+  path      String // e.g. "src/routes/invoices.ts"
+  language  String // shiki language id: ts, tsx, sql, dart, prisma, ...
+  purpose   String // one line shown in the file tree tooltip
+
+  session Session       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  hunks   Hunk[]
+  stage   SessionStage?
+
+  @@unique([sessionId, order])
+}
+
+model Hunk {
+  id        String @id @default(cuid())
+  fileId    String
+  label     String // "HUNK A", unique within the session
+  order     Int // order inside the file
+  startLine Int
+  endLine   Int // computed server-side from code, never trusted from the model
+  code      String
+
+  file        GeneratedFile    @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  truth       HunkGroundTruth?
+  submissions UserSubmission[]
+
+  @@unique([fileId, order])
+}
+
+// Hidden answer key. Only the grader reads this table.
+model HunkGroundTruth {
+  id     String @id @default(cuid())
+  hunkId String @unique
+
+  severity      TruthSeverity
+  category      String // e.g. "tenant-isolation", "race-condition" (drives "weak categories")
+  defect        String // what is actually wrong (or "none")
+  blastRadius   String
+  canonicalFix  String // ideal one-line fix
+  evidenceLines Int[] // absolute line numbers that prove the verdict
+  policyId      String? // set when severity = INTENTIONAL; points at briefPolicies[].id
+  decoyReason   String? // for CLEAN / INTENTIONAL: why a skimmer would wrongly flag it
+  graderNotes   String // what a correct answer must mention; generic advice to reject
+
+  hunk Hunk @relation(fields: [hunkId], references: [id], onDelete: Cascade)
+}
+
+model UserSubmission {
+  id        String @id @default(cuid())
+  sessionId String
+  hunkId    String
+
+  verdict       Verdict? // null = never answered (ran out of time)
+  defectSummary String   @default("")
+  blastRadius   String   @default("")
+  oneLineFix    String   @default("")
+  lockedAt      DateTime
+
+  // Filled by the grader
+  points          Float?
+  isFalsePositive Boolean?
+  isMissedDefect  Boolean?
+  graderFeedback  String?
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  hunk    Hunk    @relation(fields: [hunkId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, hunkId])
+}
+
+model TelemetryEvent {
+  id         String        @id @default(cuid())
+  sessionId  String
+  type       TelemetryType
+  stageIndex Int
+  hunkId     String?
+  payload    Json? // e.g. { from: "P1", to: "P0" } or { field: "oneLineFix" }
+  clientAt   DateTime // when it happened in the browser
+  receivedAt DateTime      @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, stageIndex])
+}
+
+// One per graded attempt; this is what the progress dashboard queries.
+model GradeReport {
+  id        String @id @default(cuid())
+  sessionId String @unique
+
+  totalScore        Float
+  maxScore          Float
+  p0Caught          Int
+  p0Total           Int
+  p1Caught          Int
+  p1Total           Int
+  falsePositives    Int
+  falsePositiveRate Float // falsePositives / hunks the user flagged
+  answeredCount     Int
+  skippedCount      Int // STRATEGIC_SKIP
+  unansweredCount   Int // verdict null
+  briefSeconds      Int
+  secondsPerFile    Json // { [fileId]: seconds }
+  weakCategories    String[]
+  summary           String
+  graderModel       String
+  createdAt         DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
