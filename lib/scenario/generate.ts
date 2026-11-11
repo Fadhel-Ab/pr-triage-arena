@@ -1,5 +1,6 @@
-import { GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
+import { ThinkingLevel, type Content } from "@google/genai";
 import { PACING } from "@/lib/arena/pacing";
+import { GEMINI_MODEL, gemini } from "@/lib/gemini";
 import {
   SYSTEM_INSTRUCTION,
   buildUserPrompt,
@@ -10,12 +11,8 @@ import {
   type ScenarioRequest,
 } from "./spec";
 
-// Free tier. gemini-2.5-flash is deprecated and closed to new API keys.
-export const GENERATION_MODEL = "gemini-3.5-flash-lite";
+export const GENERATION_MODEL = GEMINI_MODEL;
 const MAX_TRIES = 3;
-
-// Created on first use so `next build` doesn't need the key.
-let ai: GoogleGenAI | undefined;
 
 export class ScenarioGenerationError extends Error {
   constructor(
@@ -27,7 +24,6 @@ export class ScenarioGenerationError extends Error {
 }
 
 export async function generateScenario(req: ScenarioRequest, signal?: AbortSignal) {
-  ai ??= new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   const started = Date.now();
   const pacing = PACING[req.pacing];
 
@@ -37,7 +33,7 @@ export async function generateScenario(req: ScenarioRequest, signal?: AbortSigna
   let lastErrors: string[] = [];
 
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
-    const response = await ai.models.generateContent({
+    const response = await gemini().models.generateContent({
       model: GENERATION_MODEL,
       contents,
       config: {

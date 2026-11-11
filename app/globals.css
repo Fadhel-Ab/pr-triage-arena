@@ -146,3 +146,10 @@
   color: #6e7681;
   user-select: none;
 }
+/* Answer-key evidence lines on the results page */
+.hunk-code .line.evidence {
+  display: inline-block;
+  width: 100%;
+  background: rgb(248 81 73 / 0.12);
+  box-shadow: inset 3px 0 0 rgb(248 81 73 / 0.8);
+}
