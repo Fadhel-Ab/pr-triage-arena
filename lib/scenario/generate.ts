@@ -1,4 +1,4 @@
-import { GoogleGenAI, type Content } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, type Content } from "@google/genai";
 import { PACING } from "@/lib/arena/pacing";
 import {
   SYSTEM_INSTRUCTION,
@@ -10,7 +10,8 @@ import {
   type ScenarioRequest,
 } from "./spec";
 
-export const GENERATION_MODEL = "gemini-2.5-flash";
+// Free tier. gemini-2.5-flash is deprecated and closed to new API keys.
+export const GENERATION_MODEL = "gemini-3.5-flash-lite";
 const MAX_TRIES = 3;
 
 // Created on first use so `next build` doesn't need the key.
@@ -44,9 +45,10 @@ export async function generateScenario(req: ScenarioRequest, signal?: AbortSigna
         responseMimeType: "application/json",
         responseSchema: scenarioResponseSchema,
         temperature: 1,
-        // Thinking lets the model plan the severity mix and line numbers before writing.
-        thinkingConfig: { thinkingBudget: 6144 },
-        maxOutputTokens: 40_000, // includes thinking tokens on 2.5 models
+        // Flash-Lite defaults to MINIMAL thinking; MEDIUM lets it plan the severity mix
+        // and line numbers before writing. Gemini 3 uses thinkingLevel, not thinkingBudget.
+        thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM },
+        maxOutputTokens: 40_000, // includes thinking tokens
         abortSignal: signal,
       },
     });
