@@ -16,13 +16,17 @@ const bodyZ = z.object({
 });
 
 export async function POST(request: Request) {
+  if (!process.env.GEMINI_API_KEY) {
+    console.error("generate-session: GEMINI_API_KEY is not set");
+    return NextResponse.json({ error: "Server misconfigured: GEMINI_API_KEY is not set." }, { status: 500 });
+  }
+
   const body = bodyZ.safeParse(await request.json().catch(() => null));
   if (!body.success) {
     return NextResponse.json({ error: "Invalid configuration", issues: body.error.issues }, { status: 400 });
   }
 
   const config = body.data;
-  const pacing = PACING[config.pacing];
 
   let generated: Awaited<ReturnType<typeof generateScenario>>;
   try {
@@ -33,9 +37,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Could not generate a valid scenario. Try again.", details }, { status: 502 });
   }
 
+  let sessionId: string;
+  try {
+    sessionId = await saveScenario(config, generated);
+  } catch (error) {
+    console.error("generate-session: saving scenario failed", error);
+    return NextResponse.json({ error: "Scenario generated but could not be saved (database error)." }, { status: 500 });
+  }
+
+  // Only the id goes back. The scenario (and its answer key) is never returned here.
+  return NextResponse.json({ id: sessionId }, { status: 201 });
+}
+
+function saveScenario(
+  config: z.infer<typeof bodyZ>,
+  generated: Awaited<ReturnType<typeof generateScenario>>,
+): Promise<string> {
+  const pacing = PACING[config.pacing];
   const { scenario } = generated;
 
-  const sessionId = await prisma.$transaction(async (tx) => {
+  return prisma.$transaction(async (tx) => {
     const session = await tx.session.create({
       data: {
         ...config,
@@ -99,7 +120,4 @@ export async function POST(request: Request) {
 
     return session.id;
   });
-
-  // Only the id goes back. The scenario (and its answer key) is never returned here.
-  return NextResponse.json({ id: sessionId }, { status: 201 });
 }

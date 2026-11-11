@@ -41,8 +41,9 @@ export default function Lobby() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      // A crash or platform timeout returns a non-JSON body, so don't assume JSON.
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `Server error (HTTP ${res.status})`);
       router.push(`/session/${data.id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Generation failed");

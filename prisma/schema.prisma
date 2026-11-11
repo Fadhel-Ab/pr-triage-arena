@@ -12,9 +12,8 @@ generator client {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL") // Neon pooled connection string
-  directUrl = env("DIRECT_URL") // Neon direct connection, used by migrations
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Prisma Postgres (Vercel integration); pooling is built in
 }
 
 // ───────────────────────────── Enums ─────────────────────────────
